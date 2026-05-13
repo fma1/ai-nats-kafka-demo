@@ -9,11 +9,12 @@ import org.scalatest.matchers._
 import org.slf4j.{Logger, LoggerFactory}
 import org.specs2.mock.Mockito
 import org.testcontainers.containers.output.Slf4jLogConsumer
-import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy
+import org.testcontainers.containers.wait.strategy.{LogMessageWaitStrategy, wait}
 import org.testcontainers.containers.{GenericContainer, KafkaContainer, PostgreSQLContainer}
 import org.testcontainers.utility.DockerImageName
 import slick.jdbc.PostgresProfile.api._
 import java.util.concurrent.Executors
+import sttp.client3._
 
 import com.github.fma.slickpkg.SlickUtils.TweetsTable
 
@@ -38,10 +39,13 @@ class NatsKafkaSlickDemoSpec extends AnyFlatSpec with should.Matchers with Befor
   val NATS_IMAGE: DockerImageName = DockerImageName.parse("nats:2.2.2")
   val KAFKA_IMAGE: DockerImageName = DockerImageName.parse("confluentinc/cp-kafka:5.4.3")
   val POSTGRES_IMAGE: DockerImageName = DockerImageName.parse("postgres:9.6.21")
+  val OLLAMA_IMAGE: DockerImageName =
+    DockerImageName.parse("ollama/ollama:latest")
 
   var natsContainer: GenericContainer1 = _
   var kafkaContainer: KafkaContainer = _
   var postgresContainer: PostgreSQLContainer1 = _
+  var ollamaContainer: GenericContainer[_] = _
 
   val origGetConfig: () => Config = Utils.getConfig
   val origGetNatsPort: () => Int = Utils.getNatsPort
@@ -90,9 +94,27 @@ class NatsKafkaSlickDemoSpec extends AnyFlatSpec with should.Matchers with Befor
       .withExposedPorts(POSTGRES_PORT)
       .withLogConsumer(new Slf4jLogConsumer(logger))
 
+    ollamaContainer = new GenericContainer(OLLAMA_IMAGE)
+      .withExposedPorts(11434)
+      .withLogConsumer(new Slf4jLogConsumer(logger))
+      .waitingFor(
+        Wait.forHttp("/api/tags")
+          .forStatusCode(200)
+      )
+
     natsContainer.start()
     kafkaContainer.start()
     postgresContainer.start()
+    ollamaContainer.start()
+
+    val ollamaHost = ollamaContainer.getHost
+    val ollamaPort = ollamaContainer.getMappedPort(11434)
+    val baseUrl = s"http://$ollamaHost:$ollamaPort"
+    val backend = HttpURLConnectionBackend()
+    basicRequest
+      .post(uri"$baseUrl/api/pull")
+      .body("""{"name":"nomic-embed-text"}""")
+      .send(backend)
 
     setUpMockGetNatsPort(natsContainer.getMappedPort(NATS_PORT))
     setUpMockGetConfig(postgresContainer.getMappedPort(POSTGRES_PORT))

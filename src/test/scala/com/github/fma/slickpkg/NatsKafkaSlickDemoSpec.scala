@@ -1,6 +1,6 @@
 package com.github.fma.slickpkg
 
-import com.github.fma.utils.Utils
+import com.github.fma.utils.{OllamaEmbeddingClient, Utils}
 import com.github.fma.utils.Utils._
 import com.typesafe.config.Config
 import org.scalatest._
@@ -9,13 +9,13 @@ import org.scalatest.matchers._
 import org.slf4j.{Logger, LoggerFactory}
 import org.specs2.mock.Mockito
 import org.testcontainers.containers.output.Slf4jLogConsumer
-import org.testcontainers.containers.wait.strategy.{LogMessageWaitStrategy, wait}
+import org.testcontainers.containers.wait.strategy.{LogMessageWaitStrategy, Wait}
 import org.testcontainers.containers.{GenericContainer, KafkaContainer, PostgreSQLContainer}
 import org.testcontainers.utility.DockerImageName
 import slick.jdbc.PostgresProfile.api._
-import java.util.concurrent.Executors
-import sttp.client3._
 
+import java.util.concurrent.Executors
+import sttp.client4._
 import com.github.fma.slickpkg.SlickUtils.TweetsTable
 
 import scala.concurrent.{ExecutionContext, ExecutionContextExecutor}
@@ -39,8 +39,7 @@ class NatsKafkaSlickDemoSpec extends AnyFlatSpec with should.Matchers with Befor
   val NATS_IMAGE: DockerImageName = DockerImageName.parse("nats:2.2.2")
   val KAFKA_IMAGE: DockerImageName = DockerImageName.parse("confluentinc/cp-kafka:5.4.3")
   val POSTGRES_IMAGE: DockerImageName = DockerImageName.parse("postgres:9.6.21")
-  val OLLAMA_IMAGE: DockerImageName =
-    DockerImageName.parse("ollama/ollama:latest")
+  val OLLAMA_IMAGE: DockerImageName = DockerImageName.parse("ollama/ollama:latest")
 
   var natsContainer: GenericContainer1 = _
   var kafkaContainer: KafkaContainer = _
@@ -94,7 +93,7 @@ class NatsKafkaSlickDemoSpec extends AnyFlatSpec with should.Matchers with Befor
       .withExposedPorts(POSTGRES_PORT)
       .withLogConsumer(new Slf4jLogConsumer(logger))
 
-    ollamaContainer = new GenericContainer(OLLAMA_IMAGE)
+    ollamaContainer = new GenericContainer1(OLLAMA_IMAGE)
       .withExposedPorts(11434)
       .withLogConsumer(new Slf4jLogConsumer(logger))
       .waitingFor(
@@ -110,7 +109,10 @@ class NatsKafkaSlickDemoSpec extends AnyFlatSpec with should.Matchers with Befor
     val ollamaHost = ollamaContainer.getHost
     val ollamaPort = ollamaContainer.getMappedPort(11434)
     val baseUrl = s"http://$ollamaHost:$ollamaPort"
-    val backend = HttpURLConnectionBackend()
+    import sttp.client4._
+
+    val backend = DefaultSyncBackend()
+
     basicRequest
       .post(uri"$baseUrl/api/pull")
       .body("""{"name":"nomic-embed-text"}""")
@@ -124,16 +126,40 @@ class NatsKafkaSlickDemoSpec extends AnyFlatSpec with should.Matchers with Befor
     postgresContainer.stop()
     kafkaContainer.stop()
     natsContainer.stop()
+    ollamaContainer.stop()
 
     Utils.getConfig = origGetConfig
     Utils.getNatsPort = origGetNatsPort
     Utils.getBootstrapServers = origGetBootstrapServers
   }
 
-  "NATS, Kafka and Postgres container" should "be running" in {
+  "NATS, Kafka, Postgres, Ollama container" should "be running" in {
     assert(natsContainer.isRunning)
     assert(kafkaContainer.isRunning)
     assert(postgresContainer.isRunning)
+    assert(ollamaContainer.isRunning)
+  }
+
+  "Embedding Client" should "be able to embed text" in {
+    val embeddingClient =
+      new OllamaEmbeddingClient(
+        ollamaContainer.getHost,
+        ollamaContainer.getMappedPort(11434)
+      )
+
+    val vector = embeddingClient.embed("hello world")
+    assert(vector.nonEmpty)
+  }
+
+  "Embedding service" should "generate vectors from text" in {
+    val embeddingClient =
+      new OllamaEmbeddingClient(
+        ollamaContainer.getHost,
+        ollamaContainer.getMappedPort(11434)
+      )
+
+    val vec = embeddingClient.embed("inflation is rising")
+    assert(vec.length > 100) // depends on model
   }
 
   "Postgres" should s"have ${TWEETS_COUNT} elements after NatsKafkaSlickDemo runs" in {
